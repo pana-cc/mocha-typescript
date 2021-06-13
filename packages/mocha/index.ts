@@ -75,7 +75,21 @@ class MochaClassTestUI extends core.ClassTestUI {
     super(runner);
   }
 }
+(MochaClassTestUI as any).prototype.context =  core.ClassTestUI.context;
 
 const mochaDecorators = new MochaClassTestUI();
+
+interface MochaClassTestUI {
+  readonly context: unique symbol;
+}
+
+declare global {
+  interface Function {
+    [mochaDecorators.context]: Mocha.Suite;
+  }
+  interface Object {
+    [mochaDecorators.context]: Mocha.Context
+  }
+}
 
 export = mochaDecorators;

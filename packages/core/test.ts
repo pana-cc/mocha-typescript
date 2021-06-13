@@ -1,4 +1,4 @@
-import { assert } from "chai";
+import { assert, AssertionError } from "chai";
 import * as chai from "chai";
 import * as chaiAsPromised from "chai-as-promised";
 import {
@@ -9,7 +9,9 @@ import {
     registerDI,
     SuiteSettings,
     TestClass,
-    TestSettings
+    TestSettings,
+    TestRunner,
+    SuiteCallback
 } from "./index";
 
 chai.use(chaiAsPromised);
@@ -17,13 +19,15 @@ chai.use(chaiAsPromised);
 class LoggingClassTestUI extends ClassTestUI {
     public log: LoggingClassTestUI.Log;
     private readonly logger: LoggingClassTestUI.LoggingRunner;
+
     constructor() {
         super(new LoggingClassTestUI.LoggingRunner());
         this.log = LoggingClassTestUI.Log.Default;
         (this.runner as LoggingClassTestUI.LoggingRunner).ui = this;
         this.logger = this.runner as LoggingClassTestUI.LoggingRunner;
     }
-    get root(): LoggingClassTestUI.ChildInfo[] { return this.logger.peek; }
+
+    public get root(): LoggingClassTestUI.ChildInfo[] { return this.logger.peek; }
 }
 
 namespace LoggingClassTestUI {
@@ -112,7 +116,6 @@ namespace LoggingClassTestUI {
 }
 
 function cleancov(s: string): string {
-
     return s.replace(/cov_[^.]+[.](f|s)[^+]+[+][+];/g, "");
 }
 
@@ -537,7 +540,7 @@ describe("testdeck", function() {
             assert.equal(callbacks[0].toString(), 'before() { cycle.push("Before All"); }');
 
             assert.equal(callbacks[1].name, "setupInstance");
-            assert.equal(cleancov(callbacks[1].toString()), "function setupInstance(){instance=theTestUI.createInstance(constructor);}");
+            assert.equal(cleancov(callbacks[1].toString()), "function setupInstance(){constructor.prototype[ClassTestUI.context]=this;instance=theTestUI.createInstance(constructor);constructor.prototype[ClassTestUI.context]=undefined;}");
 
             assert.equal(callbacks[2].name, "before");
             assert.equal(callbacks[2].toString(), 'before() { cycle.push("Before Each"); }');
@@ -789,21 +792,21 @@ describe("testdeck", function() {
 
             const suite = ui.root[0] as LoggingClassTestUI.SuiteInfo;
 
-            await assert.isRejected(new Promise((resolve, reject) => {
+            await assert.isRejected(new Promise<void>((resolve, reject) => {
                 suite.children[0].callback((err?) => err ? reject(err) : resolve());
             }) as PromiseLike<any>);
             suite.children[1].callback();
-            await assert.isRejected(new Promise((resolve, reject) => {
+            await assert.isRejected(new Promise<void>((resolve, reject) => {
                 suite.children[2].callback((err?) => err ? reject(err) : resolve());
             }) as PromiseLike<any>);
-            await assert.isRejected(new Promise((resolve, reject) => {
+            await assert.isRejected(new Promise<void>((resolve, reject) => {
                 suite.children[3].callback((err?) => err ? reject(err) : resolve());
             }) as PromiseLike<any>);
-            await assert.isRejected(new Promise((resolve, reject) => {
+            await assert.isRejected(new Promise<void>((resolve, reject) => {
                 suite.children[4].callback((err?) => err ? reject(err) : resolve());
             }) as PromiseLike<any>);
             suite.children[5].callback();
-            await assert.isRejected(new Promise((resolve, reject) => {
+            await assert.isRejected(new Promise<void>((resolve, reject) => {
                 suite.children[6].callback((err?) => err ? reject(err) : resolve());
             }) as PromiseLike<any>);
         });
@@ -928,6 +931,224 @@ describe("testdeck", function() {
           }
         }
       });
+    });
+
+    describe("test framework context", function() {
+        beforeEach(function() {
+            ui.log = LoggingClassTestUI.Log.All;
+        });
+
+        it("is passed down to sync tests", function() {
+
+            let trace: string = "";
+
+            @ui.suite
+            class MySyncTest {
+                static before() {
+                    trace += `static before(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                constructor() {
+                    trace += `constructor(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                before(): void {
+                    trace += `before(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                @ui.test
+                myTest1(): void {
+                    trace += `myTest1(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                @ui.test
+                myTest2(): void {
+                    trace += `myTest2(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                after(): void {
+                    trace += `after(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                static after() {
+                    trace += `static after(); context: ${this[ClassTestUI.context]};\n`;
+                }
+            }
+
+            const suite = ui.root[0];
+            if (suite.type !== "suite") throw new AssertionError("Expected a class suite as first root element.");
+
+            const suiteBeforeAll = suite.children[0];
+            if (suiteBeforeAll.type !== "beforeAll" || suiteBeforeAll.name !== "static before") throw new AssertionError("Expected child 0 to be the 'static before'.");
+
+            const testInstanceInit = suite.children[1];
+            if (testInstanceInit.type !== "beforeEach" || testInstanceInit.name !== "setup instance") throw new AssertionError("Expected class 1 to be the 'setup instance' before each.");
+
+            const testInstanceBeforeEach = suite.children[2];
+            if (testInstanceBeforeEach.type !== "beforeEach" || testInstanceBeforeEach.name !== "before") throw new AssertionError("Expected child 2 to be the instance 'before' before-each callback.");
+
+            const testMethod1 = suite.children[3];
+            if (testMethod1.type !== "test" || testMethod1.name !== "myTest1") throw new AssertionError("Expected child 3 to be test method 'myTest1'.");
+
+            const testMethod2 = suite.children[4];
+            if (testMethod2.type !== "test" || testMethod2.name !== "myTest2") throw new AssertionError("Expected child 4 to be test method 'myTest1'.");
+
+            const testInstanceAfterEach = suite.children[5];
+            if (testInstanceAfterEach.type !== "afterEach" || testInstanceAfterEach.name !== "after") throw new AssertionError("Expected child 5 to be the instance 'after' after-each callback.");
+
+            const testInstanceTeardown = suite.children[6];
+            if (testInstanceTeardown.type !== "afterEach" || testInstanceTeardown.name !== "teardown instance") throw new AssertionError("Expected class 6 to be the 'teardown instance' after each.");
+
+            const suiteAfterAll = suite.children[7];
+            if (suiteAfterAll.type !== "afterAll" || suiteAfterAll.name !== "static after") throw new AssertionError("Expected child 7 to be the 'static after'.");
+
+            suiteBeforeAll.callback.call("suiteBeforeAll Context");
+
+            testInstanceInit.callback.call("testInstanceInit 1 Context");
+            testInstanceBeforeEach.callback.call("testBeforeEach 1 Context");
+            testMethod1.callback.call("testMethod 1 Context");
+            testInstanceAfterEach.callback.call("testAfterEach 1 Context");
+            testInstanceTeardown.callback.call("testInstanceTeardown 1 Context");
+
+            testInstanceInit.callback.call("testInstanceInit 2 Context");
+            testInstanceBeforeEach.callback.call("testBeforeEach 2 Context");
+            testMethod2.callback.call("testMethod 2 Context");
+            testInstanceAfterEach.callback.call("testAfterEach 2 Context");
+            testInstanceTeardown.callback.call("testInstanceTeardown 2 Context");
+
+            suiteAfterAll.callback.call("suiteAfterAll Context");
+
+            const expected =
+                "static before(); context: suiteBeforeAll Context;\n" +
+                "constructor(); context: testInstanceInit 1 Context;\n" +
+                "before(); context: testBeforeEach 1 Context;\n" +
+                "myTest1(); context: testMethod 1 Context;\n" +
+                "after(); context: testAfterEach 1 Context;\n" +
+                "constructor(); context: testInstanceInit 2 Context;\n" +
+                "before(); context: testBeforeEach 2 Context;\n" +
+                "myTest2(); context: testMethod 2 Context;\n" +
+                "after(); context: testAfterEach 2 Context;\n" +
+                "static after(); context: suiteAfterAll Context;\n" +
+                "";
+
+            assert.equal(trace, expected);
+        });
+        it("is passed down to async tests", function() {
+
+            let trace: string = "";
+
+            @ui.suite
+            class MySyncTest {
+                static before(done: Done) {
+                    trace += `static before(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                constructor() {
+                    trace += `constructor(); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                before(done: Done): void {
+                    trace += `before(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                @ui.test
+                myTest1(done: Done): void {
+                    trace += `myTest1(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                @ui.test
+                myTest2(done: Done): void {
+                    trace += `myTest2(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                after(done: Done): void {
+                    trace += `after(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+
+                static after(done: Done) {
+                    trace += `static after(done); context: ${this[ClassTestUI.context]};\n`;
+                }
+            }
+
+            const suite = ui.root[0];
+            if (suite.type !== "suite") throw new AssertionError("Expected a class suite as first root element.");
+
+            const suiteBeforeAll = suite.children[0];
+            if (suiteBeforeAll.type !== "beforeAll" || suiteBeforeAll.name !== "static before") throw new AssertionError("Expected child 0 to be the 'static before'.");
+
+            const testInstanceInit = suite.children[1];
+            if (testInstanceInit.type !== "beforeEach" || testInstanceInit.name !== "setup instance") throw new AssertionError("Expected class 1 to be the 'setup instance' before each.");
+
+            const testInstanceBeforeEach = suite.children[2];
+            if (testInstanceBeforeEach.type !== "beforeEach" || testInstanceBeforeEach.name !== "before") throw new AssertionError("Expected child 2 to be the instance 'before' before-each callback.");
+
+            const testMethod1 = suite.children[3];
+            if (testMethod1.type !== "test" || testMethod1.name !== "myTest1") throw new AssertionError("Expected child 3 to be test method 'myTest1'.");
+
+            const testMethod2 = suite.children[4];
+            if (testMethod2.type !== "test" || testMethod2.name !== "myTest2") throw new AssertionError("Expected child 4 to be test method 'myTest1'.");
+
+            const testInstanceAfterEach = suite.children[5];
+            if (testInstanceAfterEach.type !== "afterEach" || testInstanceAfterEach.name !== "after") throw new AssertionError("Expected child 5 to be the instance 'after' after-each callback.");
+
+            const testInstanceTeardown = suite.children[6];
+            if (testInstanceTeardown.type !== "afterEach" || testInstanceTeardown.name !== "teardown instance") throw new AssertionError("Expected class 6 to be the 'teardown instance' after each.");
+
+            const suiteAfterAll = suite.children[7];
+            if (suiteAfterAll.type !== "afterAll" || suiteAfterAll.name !== "static after") throw new AssertionError("Expected child 7 to be the 'static after'.");
+
+            const ignore = () => {};
+            suiteBeforeAll.callback.call("suiteBeforeAll Context", ignore);
+
+            // TODO: Scramble async tests! Parallel running? Try:
+            // testInstanceInit (for test 1)
+            // testInstanceInit (for test 2)
+            // testInstanceBeforeEach (for test 1)
+            // testMethod1 (for test 1)
+            // testInstanceBeforeEach (for test 2)
+            // testMethod2 (for test 2)
+            // testInstanceAfterEach (for test 1)
+            // testInstanceTeardown (for test 1)
+            // testInstanceAfterEach (for test 2)
+            // testInstanceTeardown (for test 2)
+            //
+            // TODO: We currently make a closure and capture an instance created during before-each,
+            // but with parallel tests this would fail,
+            // the test instance should probably be assigned to the test context,
+            // and cleared from the test context.
+
+            // TODO: In the async tests, spend some time awaiting something before calling "done", or try with `@test async myTest()...`
+            // and check for the context after a while, make sure it is not swapped or cleared before the end of the test execution.
+
+            testInstanceInit.callback.call("testInstanceInit 1 Context", ignore);
+            testInstanceBeforeEach.callback.call("testBeforeEach 1 Context", ignore);
+            testMethod1.callback.call("testMethod 1 Context", ignore);
+            testInstanceAfterEach.callback.call("testAfterEach 1 Context", ignore);
+            testInstanceTeardown.callback.call("testInstanceTeardown 1 Context", ignore);
+
+            testInstanceInit.callback.call("testInstanceInit 2 Context", ignore);
+            testInstanceBeforeEach.callback.call("testBeforeEach 2 Context", ignore);
+            testMethod2.callback.call("testMethod 2 Context", ignore);
+            testInstanceAfterEach.callback.call("testAfterEach 2 Context", ignore);
+            testInstanceTeardown.callback.call("testInstanceTeardown 2 Context", ignore);
+
+            suiteAfterAll.callback.call("suiteAfterAll Context", ignore);
+
+            const expected =
+                "static before(done); context: suiteBeforeAll Context;\n" +
+                "constructor(); context: testInstanceInit 1 Context;\n" +
+                "before(done); context: testBeforeEach 1 Context;\n" +
+                "myTest1(done); context: testMethod 1 Context;\n" +
+                "after(done); context: testAfterEach 1 Context;\n" +
+                "constructor(); context: testInstanceInit 2 Context;\n" +
+                "before(done); context: testBeforeEach 2 Context;\n" +
+                "myTest2(done); context: testMethod 2 Context;\n" +
+                "after(done); context: testAfterEach 2 Context;\n" +
+                "static after(done); context: suiteAfterAll Context;\n" +
+                "";
+
+            assert.equal(trace, expected);
+        });
     });
 });
 

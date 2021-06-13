@@ -1,5 +1,5 @@
 import { assert } from "chai";
-import { retries, slow, suite, test, timeout } from "./index";
+import { retries, slow, suite, test, timeout, context } from "./index";
 
 describe("tests", function() {
 
@@ -102,6 +102,26 @@ describe("tests", function() {
         }
     }
 
+    @suite class SuiteContext {
+
+        static async before() {
+            this[context].timeout(50);
+            events.push("Has mocha before all suite context");
+        }
+
+        before() {
+            this[context].timeout(50);
+            events.push("Has mocha before each suite context");
+        }
+
+        @test testHasContext(done) {
+            // Got mocha context:
+            this[context].timeout(50);
+            setTimeout(done, 0);
+            events.push("Has mocha test context");
+        }
+    }
+
     before(function() {
         events = [];
     });
@@ -125,7 +145,10 @@ describe("tests", function() {
                 "CallbacksSuite before",
                 "CallbacksSuite test3",
                 "CallbacksSuite after",
-                "CallbacksSuite static after"
+                "CallbacksSuite static after",
+                "Has mocha before all suite context",
+                "Has mocha before each suite context",
+                "Has mocha test context"
             ]);
         });
     });
